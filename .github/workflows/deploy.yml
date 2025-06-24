@@ -1,41 +1,105 @@
-name: Build and Deploy to Ubuntu Server
+name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  build-and-deploy:
+  test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Build Angular app
-        run: |
-          npm ci
-          npm run build --prod
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
 
-      - name: Copy files to server via SCP
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "Dockerfile,nginx.conf,dist"
-          target: "~/angular_cicid_test"
+    - name: Install dependencies
+      run: npm ci
 
-      - name: SSH to server and build/run Docker
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            cd ~/angular_cicid_test
-            docker stop angular-cicid-test || true
-            docker rm angular-cicid-test || true
-            docker build -t angular-cicid-test .
-            docker run -d --name angular-cicid-test -p 80:80 angular-cicid-test
+    - name: Run tests (if available)
+      run: npm test --if-present
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🔐 Setup SSH
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ secrets.ORACLE_VM_SSH_KEY }}
+
+    - name: 🤝 Add server to known hosts
+      run: |
+        SSH_HOST="${{ secrets.ORACLE_VM_HOST }}"
+        echo "🔍 Debugging SSH_HOST:"
+        echo "Length: ${#SSH_HOST}"
+        echo "Value (masked): ${SSH_HOST:0:3}***${SSH_HOST: -3}"
+        if [ -z "$SSH_HOST" ]; then
+          echo "❌ SSH_HOST secret is empty or not set!"
+          exit 1
+        fi
+        SSH_HOST=$(echo "$SSH_HOST" | xargs)
+        if [ -z "$SSH_HOST" ]; then
+          echo "❌ SSH_HOST secret contains only whitespace!"
+          exit 1
+        fi
+        echo "✅ SSH_HOST appears to be set correctly"
+        mkdir -p ~/.ssh
+        ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+    - name: 🚀 Deploy to server
+      run: |
+        PROJECT_DIR="/home/${{ secrets.ORACLE_VM_USERNAME }}/angular_cicid_test"
+        ssh ${{ secrets.ORACLE_VM_USERNAME }}@${{ secrets.ORACLE_VM_HOST }} "
+          mkdir -p $PROJECT_DIR
+          cd $PROJECT_DIR
+          if [ -d '.git' ]; then
+            echo 'Pulling latest changes...'
+            git fetch origin
+            git reset --hard origin/main
+          else
+            echo 'Cloning repository...'
+            git clone https://github.com/${{ github.repository }}.git .
+          fi
+          echo 'Stopping existing container...'
+          docker stop angular-cicid-test || true
+          docker rm angular-cicid-test || true
+          echo 'Cleaning up old images...'
+          docker rmi angular-cicid-test:latest || true
+          echo 'Building new Docker image...'
+          docker build -t angular-cicid-test:latest .
+          echo 'Starting new container...'
+          docker run -d \
+            --name angular-cicid-test \
+            --restart unless-stopped \
+            -p 80:80 \
+            angular-cicid-test:latest
+          echo 'Cleaning up unused images...'
+          docker image prune -f
+          echo 'Deployment completed successfully!'
+          echo 'Application is running on port 80'
+        "
+
+    - name: Health check
+      run: |
+        echo "Waiting for application to start..."
+        sleep 20
+        if curl -f http://${{ secrets.ORACLE_VM_HOST }}; then
+          echo "✅ Application is healthy and responding"
+        else
+          echo "❌ Application health check failed"
+          exit 1
+        fi
