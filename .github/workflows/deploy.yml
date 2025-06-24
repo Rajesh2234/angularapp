@@ -58,4 +58,4 @@ jobs:
         SSH_HOST="${{ secrets.ORACLE_VM_HOST }}"
         echo "🔍 Verifying SSH host..."
         if [ -z "$SSH_HOST" ]; then
-          echo "❌ SSH_HOST is no_
+          echo "❌ SSH_HOST is not set!"
