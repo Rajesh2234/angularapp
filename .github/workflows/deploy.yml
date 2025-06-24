@@ -13,7 +13,7 @@ jobs:
     environment: production
 
     steps:
-    - name: Checkout code
+    - name: 🛎️ Checkout code
       uses: actions/checkout@v4
 
     - name: 🔐 Setup SSH
@@ -24,7 +24,7 @@ jobs:
     - name: 🤝 Add server to known hosts
       run: |
         SSH_HOST="${{ secrets.ORACLE_VM_HOST }}"
-        echo "🔍 Debugging SSH_HOST:"
+        echo "🔍 Checking SSH_HOST..."
         echo "Length: ${#SSH_HOST}"
         echo "Value (masked): ${SSH_HOST:0:3}***${SSH_HOST: -3}"
         if [ -z "$SSH_HOST" ]; then
@@ -32,50 +32,44 @@ jobs:
           exit 1
         fi
         SSH_HOST=$(echo "$SSH_HOST" | xargs)
-        if [ -z "$SSH_HOST" ]; then
-          echo "❌ SSH_HOST secret contains only whitespace!"
-          exit 1
-        fi
-        echo "✅ SSH_HOST appears to be set correctly"
         mkdir -p ~/.ssh
         ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
 
-    - name: 🚀 Deploy to server
+    - name: 📤 Copy project to server
       run: |
-        PROJECT_DIR="/home/${{ secrets.ORACLE_VM_USERNAME }}/angular_cicid_test"
+        rsync -az --delete ./ ${{ secrets.ORACLE_VM_USERNAME }}@${{ secrets.ORACLE_VM_HOST }}:/home/${{ secrets.ORACLE_VM_USERNAME }}/angular_cicid_test
+
+    - name: 🚀 Build, Run, and Deploy Docker on remote server
+      run: |
         ssh ${{ secrets.ORACLE_VM_USERNAME }}@${{ secrets.ORACLE_VM_HOST }} "
-          mkdir -p $PROJECT_DIR
-          cd $PROJECT_DIR
-          if [ -d '.git' ]; then
-            echo 'Pulling latest changes...'
-            git fetch origin
-            git reset --hard origin/main
-          else
-            echo 'Cloning repository...'
-            git clone https://github.com/${{ github.repository }}.git .
-          fi
-          echo 'Stopping existing container...'
+          cd /home/${{ secrets.ORACLE_VM_USERNAME }}/angular_cicid_test
+
+          echo '⛔ Stopping existing container...'
           docker stop angular-cicid-test || true
           docker rm angular-cicid-test || true
-          echo 'Cleaning up old images...'
+
+          echo '🧹 Removing old image...'
           docker rmi angular-cicid-test:latest || true
-          echo 'Building new Docker image...'
+
+          echo '🔨 Building new Docker image...'
           docker build -t angular-cicid-test:latest .
-          echo 'Starting new container...'
+
+          echo '🚀 Running new container...'
           docker run -d \
             --name angular-cicid-test \
             --restart unless-stopped \
             -p 80:80 \
             angular-cicid-test:latest
-          echo 'Cleaning up unused images...'
+
+          echo '🧼 Cleaning up unused Docker resources...'
           docker image prune -f
-          echo 'Deployment completed successfully!'
-          echo 'Application is running on port 80'
+
+          echo '✅ Deployment complete.'
         "
 
-    - name: Health check
+    - name: ❤️ Health check
       run: |
-        echo "Waiting for application to start..."
+        echo "⏳ Waiting for the application to start..."
         sleep 20
         if curl -f http://${{ secrets.ORACLE_VM_HOST }}; then
           echo "✅ Application is healthy and responding"
